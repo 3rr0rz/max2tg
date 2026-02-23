@@ -1,0 +1,223 @@
+import logging
+from html import escape
+
+from app.max_client import MaxClient, MaxMessage
+from app.resolver import ContactResolver
+from app.tg_sender import TelegramSender
+
+log = logging.getLogger(__name__)
+
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+
+
+def _header(msg: MaxMessage, sender_label: str, chat_label: str, is_dm: bool) -> str:
+    if is_dm:
+        return f"✉ <b>{sender_label}</b>"
+    return f"💬 <b>{chat_label}</b> | {sender_label}"
+
+
+def _extract_photo_url(attach: dict) -> str | None:
+    """Extract the best available URL for a PHOTO attachment."""
+    return attach.get("baseUrl") or attach.get("url")
+
+
+def _extract_file_url(attach: dict) -> str | None:
+    """Extract download URL for a FILE attachment (url field takes priority)."""
+    url = attach.get("url")
+    if url and url.startswith("http"):
+        return url
+    return None
+
+
+def _guess_media_kind(filename: str) -> str:
+    name_lower = filename.lower()
+    for ext in PHOTO_EXTENSIONS:
+        if name_lower.endswith(ext):
+            return "photo"
+    for ext in VIDEO_EXTENSIONS:
+        if name_lower.endswith(ext):
+            return "video"
+    return "document"
+
+
+async def _send_attach(
+    attach: dict,
+    client: MaxClient,
+    sender: TelegramSender,
+    header_text: str,
+) -> bool:
+    """Process and send a single attachment. Returns True if handled."""
+    atype = attach.get("_type", "")
+    log.info("Processing attach _type=%s keys=%s", atype, list(attach.keys()))
+
+    if atype == "CONTROL" or atype == "WIDGET" or atype == "INLINE_KEYBOARD":
+        return False
+
+    if atype == "PHOTO":
+        url = _extract_photo_url(attach)
+        if not url:
+            log.warning("PHOTO attach has no URL: %s", attach)
+            return False
+        data = await client.download_file(url)
+        if data:
+            await sender.send_photo(data, caption=header_text)
+            return True
+        await sender.send(f"{header_text}\n<i>[фото — не удалось загрузить]</i>")
+        return True
+
+    if atype == "VIDEO":
+        thumb = attach.get("thumbnail")
+        if thumb:
+            data = await client.download_file(thumb)
+            if data:
+                await sender.send_photo(data, caption=f"{header_text}\n<i>[видео — превью]</i>")
+                return True
+        await sender.send(f"{header_text}\n<i>[видео]</i>")
+        return True
+
+    if atype == "FILE":
+        name = attach.get("name", "file")
+        size = attach.get("size", 0)
+        token_url = _extract_file_url(attach)
+        if token_url:
+            data = await client.download_file(token_url)
+            if data:
+                kind = _guess_media_kind(name)
+                if kind == "photo":
+                    await sender.send_photo(data, caption=header_text, filename=name)
+                elif kind == "video":
+                    await sender.send_video(data, caption=header_text, filename=name)
+                else:
+                    await sender.send_document(data, caption=header_text, filename=name)
+                return True
+        size_str = f" ({_human_size(size)})" if size else ""
+        await sender.send(f"{header_text}\n📎 <b>{escape(name)}</b>{size_str}")
+        return True
+
+    if atype == "AUDIO":
+        url = attach.get("url")
+        if url:
+            data = await client.download_file(url)
+            if data:
+                await sender.send_voice(data, caption=header_text)
+                return True
+        await sender.send(f"{header_text}\n<i>[аудио]</i>")
+        return True
+
+    if atype == "STICKER":
+        url = attach.get("url")
+        if url:
+            data = await client.download_file(url)
+            if data:
+                await sender.send_sticker(data)
+                return True
+        await sender.send(f"{header_text}\n<i>[стикер]</i>")
+        return True
+
+    if atype == "SHARE":
+        share_url = attach.get("url", "")
+        title = attach.get("title", "")
+        desc = attach.get("description", "")
+        parts = [header_text]
+        if title:
+            parts.append(f"🔗 <b>{escape(title)}</b>")
+        if share_url:
+            parts.append(escape(share_url))
+        if desc:
+            parts.append(f"<i>{escape(desc[:200])}</i>")
+        await sender.send("\n".join(parts))
+        return True
+
+    if atype == "LOCATION":
+        lat = attach.get("lat") or attach.get("latitude")
+        lon = attach.get("lon") or attach.get("lng") or attach.get("longitude")
+        if lat and lon:
+            await sender.send(f"{header_text}\n📍 {lat}, {lon}")
+        else:
+            await sender.send(f"{header_text}\n<i>[геолокация]</i>")
+        return True
+
+    if atype == "CONTACT":
+        name = attach.get("name", "")
+        phone = attach.get("phone", "")
+        text = f"{header_text}\n👤 {escape(name)}"
+        if phone:
+            text += f" — {escape(phone)}"
+        await sender.send(text)
+        return True
+
+    log.info("Unknown attach type %s, sending as info", atype)
+    await sender.send(f"{header_text}\n<i>[вложение: {escape(atype or 'unknown')}]</i>")
+    return True
+
+
+def _human_size(n: int) -> str:
+    for unit in ("Б", "КБ", "МБ", "ГБ"):
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "Б" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} ТБ"
+
+
+def create_max_client(
+    max_token: str, max_device_id: str, sender: TelegramSender
+) -> MaxClient:
+    client = MaxClient(token=max_token, device_id=max_device_id)
+    resolver = ContactResolver(client=client)
+
+    @client.on_ready
+    async def handle_ready(snapshot: dict):
+        participant_ids = resolver.load_snapshot(snapshot)
+
+        if participant_ids:
+            log.info("Batch-resolving %d participants...", len(participant_ids))
+            await resolver.resolve_users_batch(participant_ids)
+            log.info("Resolved users: %s", resolver.users)
+
+            log.info("Known chats: %s", resolver.chats)
+            log.info("Known users: %s", resolver.users)
+
+    @client.on_message
+    async def handle_message(msg: MaxMessage):
+        log.info(
+            "New message: chat=%s sender=%s is_self=%s text=%r attaches=%d",
+            msg.chat_id,
+            msg.sender_id,
+            msg.is_self,
+            (msg.text[:80] + "…") if len(msg.text) > 80 else msg.text,
+            len(msg.attaches),
+        )
+
+        if msg.is_self:
+            return
+
+        sender_label = escape(await resolver.resolve_user(msg.sender_id))
+        is_dm = resolver.is_dm(msg.chat_id)
+        chat_label = escape(resolver.chat_name(msg.chat_id))
+        header_text = _header(msg, sender_label, chat_label, is_dm)
+
+        meaningful_attaches = [
+            a for a in msg.attaches
+            if isinstance(a, dict) and a.get("_type") not in ("CONTROL", "WIDGET", "INLINE_KEYBOARD", None)
+        ]
+
+        if meaningful_attaches:
+            text_sent = False
+            for i, attach in enumerate(meaningful_attaches):
+                if i == 0 and msg.text:
+                    cap = f"{header_text}\n{escape(msg.text)}"
+                    text_sent = True
+                else:
+                    cap = header_text
+                await _send_attach(attach, client, sender, cap)
+                log.info("Forwarded attach _type=%s → TG", attach.get("_type"))
+
+            if msg.text and not text_sent:
+                await sender.send(f"{header_text}\n{escape(msg.text)}")
+        else:
+            body = escape(msg.text) if msg.text else "<i>[нетекстовое сообщение]</i>"
+            await sender.send(f"{header_text}\n{body}")
+            log.info("Forwarded text → TG")
+
+    return client
