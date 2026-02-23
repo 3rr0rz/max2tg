@@ -9,3 +9,6 @@ services:
       nproc:
         soft: 256
         hard: 512
+      stack:
+        soft: 1048576
+        hard: 1048576

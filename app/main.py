@@ -1,10 +1,13 @@
 import asyncio
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from app.config import load_settings
 from app.max_listener import create_max_client
 from app.tg_sender import TelegramSender
+
+threading.stack_size(524288)
 
 logging.basicConfig(
     level=logging.DEBUG,
