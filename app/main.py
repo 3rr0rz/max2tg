@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from app.config import load_settings
 from app.max_listener import create_max_client
@@ -15,6 +16,9 @@ log = logging.getLogger("max2tg")
 
 
 async def main():
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=2))
+
     settings = load_settings()
 
     sender = TelegramSender(settings.tg_bot_token, settings.tg_chat_id)

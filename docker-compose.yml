@@ -5,3 +5,8 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    pids_limit: 256
+    ulimits:
+      nproc:
+        soft: 256
+        hard: 512
