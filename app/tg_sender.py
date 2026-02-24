@@ -2,7 +2,7 @@ import asyncio
 import io
 import logging
 
-from telegram import Bot, InputFile
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TimedOut
 
@@ -13,10 +13,21 @@ TG_CAPTION_MAX = 1024
 MAX_RETRIES = 3
 
 
+def reply_keyboard(max_chat_id) -> InlineKeyboardMarkup:
+    """Build an inline keyboard with a single 'Reply' button."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("💬 Ответить", callback_data=f"reply:{max_chat_id}")
+    ]])
+
+
 class TelegramSender:
     def __init__(self, token: str, chat_id: str):
         self._bot = Bot(token=token)
         self._chat_id = chat_id
+
+    @property
+    def bot(self) -> Bot:
+        return self._bot
 
     async def start(self):
         await self._bot.initialize()
@@ -46,7 +57,7 @@ class TelegramSender:
                 return None
         return None
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, reply_markup=None) -> None:
         if not text:
             return
 
@@ -58,10 +69,11 @@ class TelegramSender:
                 chat_id=self._chat_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
         )
 
-    async def send_photo(self, data: bytes, caption: str = "", filename: str = "photo.jpg") -> None:
+    async def send_photo(self, data: bytes, caption: str = "", filename: str = "photo.jpg", reply_markup=None) -> None:
         caption = self._truncate_caption(caption)
         await self._retry(
             lambda: self._bot.send_photo(
@@ -69,10 +81,11 @@ class TelegramSender:
                 photo=InputFile(io.BytesIO(data), filename=filename),
                 caption=caption or None,
                 parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
         )
 
-    async def send_document(self, data: bytes, caption: str = "", filename: str = "file") -> None:
+    async def send_document(self, data: bytes, caption: str = "", filename: str = "file", reply_markup=None) -> None:
         caption = self._truncate_caption(caption)
         await self._retry(
             lambda: self._bot.send_document(
@@ -80,10 +93,11 @@ class TelegramSender:
                 document=InputFile(io.BytesIO(data), filename=filename),
                 caption=caption or None,
                 parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
         )
 
-    async def send_video(self, data: bytes, caption: str = "", filename: str = "video.mp4") -> None:
+    async def send_video(self, data: bytes, caption: str = "", filename: str = "video.mp4", reply_markup=None) -> None:
         caption = self._truncate_caption(caption)
         await self._retry(
             lambda: self._bot.send_video(
@@ -91,10 +105,11 @@ class TelegramSender:
                 video=InputFile(io.BytesIO(data), filename=filename),
                 caption=caption or None,
                 parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
         )
 
-    async def send_voice(self, data: bytes, caption: str = "") -> None:
+    async def send_voice(self, data: bytes, caption: str = "", reply_markup=None) -> None:
         caption = self._truncate_caption(caption)
         result = await self._retry(
             lambda: self._bot.send_voice(
@@ -102,6 +117,7 @@ class TelegramSender:
                 voice=InputFile(io.BytesIO(data), filename="voice.ogg"),
                 caption=caption or None,
                 parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
         )
         if result is None:
@@ -112,13 +128,15 @@ class TelegramSender:
                     audio=InputFile(io.BytesIO(data), filename="audio.m4a"),
                     caption=caption or None,
                     parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
                 )
             )
 
-    async def send_sticker(self, data: bytes) -> None:
+    async def send_sticker(self, data: bytes, reply_markup=None) -> None:
         await self._retry(
             lambda: self._bot.send_sticker(
                 chat_id=self._chat_id,
                 sticker=InputFile(io.BytesIO(data), filename="sticker.webp"),
+                reply_markup=reply_markup,
             )
         )

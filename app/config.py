@@ -11,6 +11,7 @@ class Settings:
     tg_bot_token: str
     tg_chat_id: str
     debug: bool = False
+    reply_enabled: bool = False
 
 
 def load_settings() -> Settings:
@@ -30,4 +31,5 @@ def load_settings() -> Settings:
         tg_bot_token=os.environ["TG_BOT_TOKEN"],
         tg_chat_id=os.environ["TG_CHAT_ID"],
         debug=os.environ.get("DEBUG", "").lower() in ("1", "true", "yes"),
+        reply_enabled=os.environ.get("REPLY_ENABLED", "").lower() in ("1", "true", "yes"),
     )

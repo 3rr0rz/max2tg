@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.config import load_settings
 from app.max_listener import create_max_client
+from app.tg_handler import build_tg_app
 from app.tg_sender import TelegramSender
 
 threading.stack_size(524288)
@@ -34,12 +35,30 @@ async def main():
     sender = TelegramSender(settings.tg_bot_token, settings.tg_chat_id)
     await sender.start()
 
-    client = create_max_client(settings.max_token, settings.max_device_id, sender, debug=settings.debug)
+    client = create_max_client(
+        settings.max_token, settings.max_device_id, sender,
+        debug=settings.debug, reply_enabled=settings.reply_enabled,
+    )
+
+    tg_app = None
+    if settings.reply_enabled:
+        tg_app = build_tg_app(settings.tg_bot_token, client, settings.tg_chat_id)
+        await tg_app.initialize()
+        await tg_app.start()
+        await tg_app.updater.start_polling(drop_pending_updates=True)
+        log.info("Telegram polling started (reply → Max enabled)")
+    else:
+        log.info("Reply to Max disabled (REPLY_ENABLED=false)")
 
     log.info("Starting Max listener...")
     try:
         await client.run()
     finally:
+        log.info("Shutting down...")
+        if tg_app:
+            await tg_app.updater.stop()
+            await tg_app.stop()
+            await tg_app.shutdown()
         await sender.stop()
 
 

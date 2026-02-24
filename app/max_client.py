@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import random
+import time
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
@@ -24,6 +26,8 @@ class OpCode(IntEnum):
     CONTACT_GET = 32
     CONTACT_PRESENCE = 35
     CHAT_GET = 48
+    SEND_MESSAGE = 64
+    EDIT_MESSAGE = 67
     DISPATCH = 128
 
 
@@ -197,7 +201,7 @@ class MaxClient:
                 log.debug("<<< RESP  op=%-4s seq=%s", op, seq)
 
         # cmd=3 is an error response
-        if cmd == 3 and seq in self._pending:
+        elif cmd == 3 and seq in self._pending:
             fut = self._pending.pop(seq)
             if not fut.done():
                 fut.set_result({})
@@ -254,6 +258,20 @@ class MaxClient:
         resp = await self.cmd(OpCode.CONTACT_GET, {"contactIds": contact_ids})
         self._dump_json("contacts_response.json", resp)
         log.info("fetch_contacts(%s) → keys: %s", contact_ids, list(resp.keys()))
+        return resp
+
+    async def send_message(self, chat_id, text: str) -> dict:
+        """Send a text message to a Max chat. Returns the server response."""
+        cid = int(time.time() * 1000) * 1000 + random.randint(0, 999)
+        resp = await self.cmd(
+            OpCode.SEND_MESSAGE,
+            {
+                "chatId": chat_id,
+                "message": {"text": text, "cid": cid},
+                "notify": True,
+            },
+        )
+        log.info("send_message(chat=%s) → %s", chat_id, "OK" if resp else "FAIL")
         return resp
 
     async def download_file(self, url: str) -> bytes | None:
