@@ -79,7 +79,7 @@ cp .env.example .env
 ### Docker (рекомендуется для сервера)
 
 ```bash
-git clone <repo-url> max2tg
+git clone git@github.com:Aist/max2tg.git max2tg
 cd max2tg
 cp .env.example .env
 # отредактируйте .env
@@ -316,7 +316,7 @@ cp .env.example .env
 ### Docker (recommended for servers)
 
 ```bash
-git clone <repo-url> max2tg
+git clone git@github.com:Aist/max2tg.git max2tg
 cd max2tg
 cp .env.example .env
 # edit .env
