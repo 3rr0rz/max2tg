@@ -65,12 +65,23 @@ async def main():
 
     log.info("Debug mode: %s", "ON" if settings.debug else "OFF")
 
+    # Логируем информацию о фильтрации по чату
+    if settings.max_target_chat_id:
+        log.info(f"⚠️ Фильтрация по чату Max включена: пересылаются только сообщения из чата ID: {settings.max_target_chat_id}")
+        log.info(f"   Чтобы отключить фильтрацию, удалите MAX_TARGET_CHAT_ID из .env")
+    else:
+        log.info("Фильтрация по чату Max отключена: пересылаются ВСЕ сообщения")
+
     sender = TelegramSender(settings.tg_bot_token, settings.tg_chat_id)
     await sender.start()
 
     client = create_max_client(
-        settings.max_token, settings.max_device_id, sender,
-        debug=settings.debug, reply_enabled=settings.reply_enabled,
+        settings.max_token, 
+        settings.max_device_id, 
+        sender,
+        debug=settings.debug, 
+        reply_enabled=settings.reply_enabled,
+        target_chat_id=settings.max_target_chat_id,  # <-- ПЕРЕДАЕМ НОВЫЙ ПАРАМЕТР
     )
 
     tg_app = None
