@@ -1,5 +1,6 @@
 import logging
 from html import escape
+from typing import Optional
 
 from app.max_client import MaxClient, MaxMessage
 from app.resolver import ContactResolver
@@ -9,6 +10,82 @@ log = logging.getLogger(__name__)
 
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+
+
+class MessageHandler:  # <-- ДОБАВЛЯЕМ класс-обертку
+    def __init__(self, tg_sender, resolver, reply_enabled: bool = False, target_chat_id: Optional[str] = None):
+        self.tg_sender = tg_sender
+        self.resolver = resolver
+        self.reply_enabled = reply_enabled
+        self.target_chat_id = target_chat_id
+        self.logger = logging.getLogger(__name__)
+
+    async def handle_message(self, msg: MaxMessage):
+        """Process a single message from Max."""
+        try:
+            # --- НОВАЯ ЛОГИКА ФИЛЬТРАЦИИ ---
+            # Если указан конкретный целевой чат, а это сообщение не из него - пропускаем
+            if self.target_chat_id is not None and str(msg.chat_id) != str(self.target_chat_id):
+                self.logger.debug(f"Пропускаем сообщение из чата {msg.chat_id} (целевой: {self.target_chat_id})")
+                return
+            # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
+            self.logger.info(
+                "New message: chat=%s sender=%s is_self=%s text=%r attaches=%d",
+                msg.chat_id,
+                msg.sender_id,
+                msg.is_self,
+                (msg.text[:80] + "…") if len(msg.text) > 80 else msg.text,
+                len(msg.attaches),
+            )
+
+            if msg.is_self:
+                return
+
+            sender_label = escape(await self.resolver.resolve_user(msg.sender_id))
+            is_dm = self.resolver.is_dm(msg.chat_id)
+            chat_label = escape(self.resolver.chat_name(msg.chat_id))
+            header_text = _header(msg, sender_label, chat_label, is_dm)
+            kb = reply_keyboard(msg.chat_id) if self.reply_enabled else None
+
+            link = msg.link
+            link_type = link.get("type") if isinstance(link, dict) else None
+
+            if link_type in ("FORWARD", "REPLY"):
+                await _handle_linked_message(
+                    link, link_type, header_text, 
+                    self.resolver.client, self.tg_sender, self.resolver, kb=kb
+                )
+                if msg.text:
+                    await self.tg_sender.send(f"{header_text}\n{escape(msg.text)}", reply_markup=kb)
+                self.logger.info("Forwarded link type=%s → TG", link_type)
+                return
+
+            meaningful_attaches = [
+                a for a in msg.attaches
+                if isinstance(a, dict) and a.get("_type") not in ("CONTROL", "WIDGET", "INLINE_KEYBOARD", None)
+            ]
+
+            if meaningful_attaches:
+                text_sent = False
+                for i, attach in enumerate(meaningful_attaches):
+                    if i == 0 and msg.text:
+                        cap = f"{header_text}\n{escape(msg.text)}"
+                        text_sent = True
+                    else:
+                        cap = header_text
+                    await _send_attach(attach, self.resolver.client, self.tg_sender, cap, kb=kb)
+                    self.logger.info("Forwarded attach _type=%s → TG", attach.get("_type"))
+
+                if msg.text and not text_sent:
+                    await self.tg_sender.send(f"{header_text}\n{escape(msg.text)}", reply_markup=kb)
+            else:
+                body = escape(msg.text) if msg.text else "<i>[нетекстовое сообщение]</i>"
+                await self.tg_sender.send(f"{header_text}\n{body}", reply_markup=kb)
+                self.logger.info("Forwarded text → TG")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling message: {e}", exc_info=True)
 
 
 def _header(msg: MaxMessage, sender_label: str, chat_label: str, is_dm: bool) -> str:
@@ -217,9 +294,18 @@ def _human_size(n: int) -> str:
 def create_max_client(
     max_token: str, max_device_id: str, sender: TelegramSender,
     debug: bool = False, reply_enabled: bool = False,
+    target_chat_id: Optional[str] = None,  # <-- ДОБАВЛЯЕМ НОВЫЙ ПАРАМЕТР
 ) -> MaxClient:
     client = MaxClient(token=max_token, device_id=max_device_id, debug=debug)
     resolver = ContactResolver(client=client)
+    
+    # Создаем обработчик сообщений с фильтром по чату
+    message_handler = MessageHandler(
+        tg_sender=sender,
+        resolver=resolver,
+        reply_enabled=reply_enabled,
+        target_chat_id=target_chat_id
+    )
 
     @client.on_ready
     async def handle_ready(snapshot: dict):
@@ -232,58 +318,16 @@ def create_max_client(
 
             log.info("Known chats: %s", resolver.chats)
             log.info("Known users: %s", resolver.users)
+            
+            # Логируем информацию о фильтрации при запуске
+            if target_chat_id:
+                log.info(f"⚠️ Фильтрация включена: пересылаются только сообщения из чата {target_chat_id}")
+            else:
+                log.info("Фильтрация отключена: пересылаются все сообщения")
 
     @client.on_message
     async def handle_message(msg: MaxMessage):
-        log.info(
-            "New message: chat=%s sender=%s is_self=%s text=%r attaches=%d",
-            msg.chat_id,
-            msg.sender_id,
-            msg.is_self,
-            (msg.text[:80] + "…") if len(msg.text) > 80 else msg.text,
-            len(msg.attaches),
-        )
-
-        if msg.is_self:
-            return
-
-        sender_label = escape(await resolver.resolve_user(msg.sender_id))
-        is_dm = resolver.is_dm(msg.chat_id)
-        chat_label = escape(resolver.chat_name(msg.chat_id))
-        header_text = _header(msg, sender_label, chat_label, is_dm)
-        kb = reply_keyboard(msg.chat_id) if reply_enabled else None
-
-        link = msg.link
-        link_type = link.get("type") if isinstance(link, dict) else None
-
-        if link_type in ("FORWARD", "REPLY"):
-            await _handle_linked_message(link, link_type, header_text, client, sender, resolver, kb=kb)
-            if msg.text:
-                await sender.send(f"{header_text}\n{escape(msg.text)}", reply_markup=kb)
-            log.info("Forwarded link type=%s → TG", link_type)
-            return
-
-        meaningful_attaches = [
-            a for a in msg.attaches
-            if isinstance(a, dict) and a.get("_type") not in ("CONTROL", "WIDGET", "INLINE_KEYBOARD", None)
-        ]
-
-        if meaningful_attaches:
-            text_sent = False
-            for i, attach in enumerate(meaningful_attaches):
-                if i == 0 and msg.text:
-                    cap = f"{header_text}\n{escape(msg.text)}"
-                    text_sent = True
-                else:
-                    cap = header_text
-                await _send_attach(attach, client, sender, cap, kb=kb)
-                log.info("Forwarded attach _type=%s → TG", attach.get("_type"))
-
-            if msg.text and not text_sent:
-                await sender.send(f"{header_text}\n{escape(msg.text)}", reply_markup=kb)
-        else:
-            body = escape(msg.text) if msg.text else "<i>[нетекстовое сообщение]</i>"
-            await sender.send(f"{header_text}\n{body}", reply_markup=kb)
-            log.info("Forwarded text → TG")
+        # Просто передаем сообщение в обработчик
+        await message_handler.handle_message(msg)
 
     return client
