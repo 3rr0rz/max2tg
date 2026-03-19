@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -10,6 +11,7 @@ class Settings:
     max_device_id: str
     tg_bot_token: str
     tg_chat_id: str
+    max_target_chat_id: Optional[str] = None
     debug: bool = False
     reply_enabled: bool = False
 
@@ -33,11 +35,21 @@ def load_settings() -> Settings:
             f"TG_CHAT_ID must be a valid integer, got: {tg_chat_id!r}"
         )
 
+    max_target_chat_id = os.environ.get("MAX_TARGET_CHAT_ID")
+    if max_target_chat_id is not None:
+        try:
+            int(max_target_chat_id)
+        except ValueError:
+            raise SystemExit(
+                f"MAX_TARGET_CHAT_ID must be a valid integer, got: {max_target_chat_id!r}"
+            )
+
     return Settings(
         max_token=os.environ["MAX_TOKEN"],
         max_device_id=os.environ["MAX_DEVICE_ID"],
         tg_bot_token=os.environ["TG_BOT_TOKEN"],
         tg_chat_id=os.environ["TG_CHAT_ID"],
+        max_target_chat_id=max_target_chat_id,
         debug=os.environ.get("DEBUG", "").lower() in ("1", "true", "yes"),
         reply_enabled=os.environ.get("REPLY_ENABLED", "").lower() in ("1", "true", "yes"),
     )
